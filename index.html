@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Lumière Booth — AI Vintage Photo Booth</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=Work+Sans:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./css/style.css" />
+</head>
+<body>
+
+  <!-- ===================== STAGE ===================== -->
+  <div id="stage">
+
+    <!-- Raw webcam feed (never shown directly, drawn onto canvas) -->
+    <video id="webcam" autoplay playsinline muted></video>
+
+    <!-- The rendered / filtered live preview -->
+    <canvas id="preview"></canvas>
+
+    <!-- Ambient light-leak / bokeh layer -->
+    <div id="lightLeaks" aria-hidden="true">
+      <div class="leak leak-a"></div>
+      <div class="leak leak-b"></div>
+      <div class="bokeh"></div>
+    </div>
+
+    <!-- Film grain layer over everything -->
+    <canvas id="grainOverlay" aria-hidden="true"></canvas>
+
+    <!-- Vignette -->
+    <div id="vignette" aria-hidden="true"></div>
+
+    <!-- ============ IDLE HINT (shown only if you cancel back out) ============ -->
+    <section id="idleHint" class="panel-fade">
+      <div class="idle-inner">
+        <h1 class="brand-title">Lumière Booth</h1>
+        <p class="idle-copy">Camera paused</p>
+        <button id="resumeBoothBtn" class="btn-primary">Open Camera Booth</button>
+      </div>
+    </section>
+
+    <!-- ============ CAMERA HOUSING UI (assembles on activation) ============ -->
+    <div id="cameraRig" aria-hidden="true">
+      <div class="rig-top">
+        <div class="rig-brand">LUMIÈRE <span>· AUTOMATIC</span></div>
+        <div class="rig-lens-ring">
+          <div class="rig-lens-glass"></div>
+          <div class="rig-lens-focus" id="lensFocusRing"></div>
+        </div>
+        <div class="rig-status-lamp" id="statusLamp"></div>
+      </div>
+      <div class="rig-frame-corner tl"></div>
+      <div class="rig-frame-corner tr"></div>
+      <div class="rig-frame-corner bl"></div>
+      <div class="rig-frame-corner br"></div>
+    </div>
+
+    <!-- ============ FILTER PANEL ============ -->
+    <section id="filterPanel" class="glass-panel" aria-hidden="true">
+      <div class="panel-heading">
+        <span class="panel-eyebrow">Choose a film</span>
+        <span class="gesture-hint">swipe a hand ← → to browse</span>
+      </div>
+      <div id="filterStrip" class="filter-strip"></div>
+
+      <div class="panel-heading panel-heading-secondary">
+        <span class="panel-eyebrow">Strip length</span>
+      </div>
+      <div id="layoutChoices" class="chip-row">
+        <button class="chip" data-layout="2">2 Photos</button>
+        <button class="chip" data-layout="3">3 Photos</button>
+        <button class="chip active" data-layout="4">4 Photos · Classic</button>
+      </div>
+
+      <div class="panel-heading panel-heading-secondary">
+        <span class="panel-eyebrow">Timer</span>
+      </div>
+      <div id="timerChoices" class="chip-row">
+        <button class="chip" data-timer="5">5s</button>
+        <button class="chip active" data-timer="7">7s</button>
+        <button class="chip" data-timer="10">10s</button>
+      </div>
+
+      <button id="startCaptureBtn" class="btn-primary">
+        Start Session <span class="btn-sub">or 👍 thumbs-up to confirm</span>
+      </button>
+      <button id="cancelBtn" class="btn-ghost">✋ Cancel</button>
+    </section>
+
+    <!-- ============ COUNTDOWN ============ -->
+    <div id="countdownLayer" aria-hidden="true">
+      <div class="countdown-frame-hint" id="shotProgress"></div>
+      <div id="countdownNumber">5</div>
+      <div id="focusReticle" class="focus-reticle"></div>
+    </div>
+
+    <!-- ============ FLASH ============ -->
+    <div id="flash" aria-hidden="true"></div>
+
+    <!-- ============ PRINTER / STRIP OUTPUT ============ -->
+    <div id="printerDock" aria-hidden="true">
+      <div class="printer-body">
+        <div class="printer-slot"></div>
+      </div>
+      <div id="stripWrap">
+        <canvas id="stripCanvas"></canvas>
+      </div>
+    </div>
+
+    <!-- ============ RESULT ACTIONS ============ -->
+    <section id="resultActions" class="glass-panel" aria-hidden="true">
+      <div class="action-grid">
+        <button id="downloadBtn" class="btn-secondary">Download PNG</button>
+        <button id="downloadJpegBtn" class="btn-secondary">Download JPEG</button>
+        <button id="downloadHiResBtn" class="btn-secondary">Download Hi-Res</button>
+        <button id="downloadPdfBtn" class="btn-secondary">Download PDF</button>
+        <button id="printBtn" class="btn-secondary">Print</button>
+        <button id="shareBtn" class="btn-secondary">Share</button>
+      </div>
+      <label class="field-inline">
+        <span>Export for</span>
+        <select id="socialPresetSelect">
+          <option value="">Original size</option>
+        </select>
+        <button id="downloadSocialBtn" class="btn-secondary">Download</button>
+      </label>
+      <button id="anotherBtn" class="btn-primary">Take Another Strip</button>
+    </section>
+
+    <!-- ============ STUDIO (layout / background / stickers / text / adjust) ============ -->
+    <section id="studioPanel" aria-hidden="true">
+      <div class="studio-shell">
+        <div id="studioCanvasWrap">
+          <canvas id="composedCanvas"></canvas>
+          <div id="overlaySurface"></div>
+        </div>
+
+        <div class="studio-side">
+          <div class="studio-tabs" role="tablist">
+            <button class="studio-tab active" data-tab="layout">Layout</button>
+            <button class="studio-tab" data-tab="background">Background</button>
+            <button class="studio-tab" data-tab="stickers">Stickers</button>
+            <button class="studio-tab" data-tab="text">Text</button>
+            <button class="studio-tab" data-tab="adjust">Adjust</button>
+          </div>
+
+          <div class="studio-tab-content">
+            <div class="tab-panel active" data-panel="layout">
+              <div id="templateGrid" class="template-grid"></div>
+            </div>
+
+            <div class="tab-panel" data-panel="background">
+              <div id="backgroundGrid" class="swatch-grid"></div>
+              <label class="field-inline"><span>Border</span><input type="color" id="borderColorInput" value="#B8863B" /></label>
+              <label class="field-inline"><span>Paper texture</span><input type="checkbox" id="paperTextureToggle" checked /></label>
+              <label class="field-inline"><span>Corner radius</span><input type="range" id="cornerRadiusInput" min="0" max="36" value="10" /></label>
+              <label class="field-inline"><span>Spacing</span><input type="range" id="spacingInput" min="0" max="36" value="14" /></label>
+              <label class="field-inline"><span>Print size</span>
+                <select id="printSizeSelect">
+                  <option value="small">Small</option>
+                  <option value="medium" selected>Medium</option>
+                  <option value="large">Large</option>
+                </select>
+              </label>
+              <p class="hint-text" id="printSizeHint">For the 2×6 and 4×6 templates, print size sets DPI (150/300/450) — the physical paper size stays exact.</p>
+              <div id="dualSheetRow" class="field-inline" aria-hidden="true">
+                <span>4×6 sheet</span>
+                <label class="checkbox-inline"><input type="checkbox" id="dualSheetToggle" /> Print two strips per 4×6 sheet (with cut line)</label>
+              </div>
+            </div>
+
+            <div class="tab-panel" data-panel="stickers">
+              <div id="stickerCategoryTabs" class="chip-row scroll-row"></div>
+              <div id="stickerGrid" class="sticker-grid"></div>
+            </div>
+
+            <div class="tab-panel" data-panel="text">
+              <button id="addTextBtn" class="btn-secondary full">+ Add Text Layer</button>
+              <label class="field-inline"><span>Font</span>
+                <select id="textFontSelect">
+                  <option value="'Fraunces', serif">Fraunces (serif)</option>
+                  <option value="'Work Sans', sans-serif">Work Sans</option>
+                  <option value="'Space Mono', monospace">Space Mono</option>
+                  <option value="'Brush Script MT', cursive">Handwritten</option>
+                  <option value="Georgia, serif">Georgia</option>
+                </select>
+              </label>
+              <label class="field-inline"><span>Color</span><input type="color" id="textColorInput" value="#F1E4C8" /></label>
+              <label class="field-inline"><span>Outline</span><input type="checkbox" id="textOutlineToggle" /></label>
+              <label class="field-inline"><span>Shadow</span><input type="checkbox" id="textShadowToggle" checked /></label>
+              <hr class="divider" />
+              <label class="field"><span>Caption</span><input id="studioCaptionInput" maxlength="60" placeholder="Say something nice…" /></label>
+              <label class="field"><span>Event title</span><input id="eventTitleInput" maxlength="40" placeholder="e.g. Maya's Wedding" /></label>
+              <label class="field-inline"><span>Date/time stamp</span><input type="checkbox" id="showTimestampToggle" checked /></label>
+              <label class="field"><span>QR code (optional link or text)</span><input id="qrTextInput" placeholder="https://…" /></label>
+            </div>
+
+            <div class="tab-panel" data-panel="adjust">
+              <label class="field"><span>Editing photo</span>
+                <select id="adjustPhotoSelect"></select>
+              </label>
+              <div id="adjustSliders"></div>
+              <button id="resetAdjustBtn" class="btn-secondary full">Reset This Photo</button>
+            </div>
+          </div>
+
+          <div class="studio-actions">
+            <button id="studioBackBtn" class="btn-ghost">← Retake</button>
+            <button id="finishPrintBtn" class="btn-primary">Print This Strip</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ GALLERY ============ -->
+    <div id="galleryModal" aria-hidden="true">
+      <div class="gallery-card">
+        <div class="gallery-header">
+          <h2>Gallery</h2>
+          <div class="gallery-header-actions">
+            <button id="galleryZipBtn" class="btn-secondary">Download All (ZIP)</button>
+            <button id="galleryCloseBtn" class="btn-secondary">Close</button>
+          </div>
+        </div>
+        <div id="galleryGrid" class="gallery-grid"></div>
+        <p id="galleryEmpty" class="gallery-empty">No prints yet — take a strip to see it here.</p>
+      </div>
+    </div>
+
+    <!-- ============ SHORTCUTS HELP ============ -->
+    <div id="shortcutsModal" aria-hidden="true">
+      <div class="shortcuts-card">
+        <h2>Keyboard shortcuts</h2>
+        <ul>
+          <li><kbd>Space</kbd> Start capture session</li>
+          <li><kbd>←</kbd> / <kbd>→</kbd> Change filter</li>
+          <li><kbd>Delete</kbd> Remove selected sticker/text</li>
+          <li><kbd>Ctrl/Cmd</kbd>+<kbd>D</kbd> Duplicate selected layer</li>
+          <li><kbd>G</kbd> Open gallery</li>
+          <li><kbd>Esc</kbd> Deselect / close panel</li>
+          <li><kbd>?</kbd> Toggle this help</li>
+        </ul>
+        <button id="shortcutsCloseBtn" class="btn-secondary full">Close</button>
+      </div>
+    </div>
+
+    <!-- Header utility bar -->
+    <div id="utilityBar">
+      <button id="galleryBtn" class="icon-btn" aria-label="Open gallery" title="Gallery (G)">🖼️</button>
+      <button id="helpBtn" class="icon-btn" aria-label="Keyboard shortcuts" title="Shortcuts (?)">?</button>
+    </div>
+
+    <!-- Top-left mini status -->
+    <div id="permissionNotice" class="panel-fade">
+      <p>This experience needs your camera.<br/>Allow access to step into the booth.</p>
+      <button id="enableCamBtn" class="btn-primary">Enable Camera</button>
+    </div>
+
+
+    <!-- Sound toggle -->
+    <button id="soundToggle" aria-label="Toggle sound">🔊</button>
+
+  </div>
+
+  <canvas id="captureBuffer" style="display:none"></canvas>
+
+  <!-- MediaPipe Hands (loaded from CDN — requires the visitor's browser to have internet access) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <!-- JSZip: bulk "download all as ZIP" from the gallery -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" crossorigin="anonymous"></script>
+  <!-- jsPDF: PDF export -->
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js" crossorigin="anonymous"></script>
+  <!-- QRCode generator: optional QR code sticker on the print -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" crossorigin="anonymous"></script>
+
+  <script type="module" src="./js/main.js"></script>
+</body>
+</html>
