@@ -1,7 +1,7 @@
 import { FILTERS, getFilter } from './filters.js';
 import { HandTracker } from './hands.js';
 import { audio } from './audio.js';
-import { LAYOUT_TEMPLATES, BACKGROUND_STYLES, PRINT_DPI, composeLayout, composeDualStripSheet } from './layouts.js';
+import { LAYOUT_TEMPLATES, BACKGROUND_STYLES, composeLayout } from './layouts.js';
 import { STICKER_CATEGORIES, OverlayManager } from './stickers.js';
 import { DEFAULT_ADJUSTMENTS, ADJUSTMENT_DEFS, renderAdjusted } from './editor.js';
 import { Gallery, downloadDataUrl, downloadAsZip } from './gallery.js';
@@ -14,9 +14,9 @@ const $ = sel => document.querySelector(sel);
 
 const videoEl = $('#webcam');
 const previewCanvas = $('#preview');
-const previewCtx = previewCanvas.getContext('2d', { alpha: false, desynchronized: true });
+const previewCtx = previewCanvas.getContext('2d');
 const grainCanvas = $('#grainOverlay');
-const grainCtx = grainCanvas.getContext('2d', { desynchronized: true });
+const grainCtx = grainCanvas.getContext('2d');
 const vignetteEl = $('#vignette');
 const lightLeaksEl = $('#lightLeaks');
 const captureBuffer = $('#captureBuffer');
@@ -28,8 +28,10 @@ const filterPanel = $('#filterPanel');
 const filterStripEl = $('#filterStrip');
 const layoutChoicesEl = $('#layoutChoices');
 const timerChoicesEl = $('#timerChoices');
+const orientationChoicesEl = $('#orientationChoices');
 const startCaptureBtn = $('#startCaptureBtn');
 const cancelBtn = $('#cancelBtn');
+const frameGuide = $('#frameGuide');
 
 const countdownLayer = $('#countdownLayer');
 const countdownNumber = $('#countdownNumber');
@@ -60,14 +62,13 @@ const overlaySurface = $('#overlaySurface');
 const studioTabs = [...document.querySelectorAll('.studio-tab')];
 const tabPanels = [...document.querySelectorAll('.tab-panel')];
 const templateGrid = $('#templateGrid');
+const studioOrientationChoicesEl = $('#studioOrientationChoices');
 const backgroundGrid = $('#backgroundGrid');
 const borderColorInput = $('#borderColorInput');
 const paperTextureToggle = $('#paperTextureToggle');
 const cornerRadiusInput = $('#cornerRadiusInput');
 const spacingInput = $('#spacingInput');
 const printSizeSelect = $('#printSizeSelect');
-const dualSheetRow = $('#dualSheetRow');
-const dualSheetToggle = $('#dualSheetToggle');
 const stickerCategoryTabs = $('#stickerCategoryTabs');
 const stickerGrid = $('#stickerGrid');
 const addTextBtn = $('#addTextBtn');
@@ -108,6 +109,7 @@ const state = {
   filterIndex: 0,
   layout: 4,
   timerSeconds: 7,
+  orientation: 'portrait', // 'portrait' | 'landscape'
   shots: [],
   shotIndex: 0,
   pinchZoom: false,
@@ -157,13 +159,13 @@ resumeBoothBtn?.addEventListener('click', activateBooth);
 window.addEventListener('resize', resizeCanvases);
 
 function resizeCanvases(){
-  // Cap the internal render resolution independent of screen size/DPR.
-  // A live camera feed doesn't need to be rendered at full 4K/retina
-  // pixel counts for every frame's worth of filter math — the canvas is
-  // displayed via CSS object-fit:cover, so a ~1600px-wide buffer looks
-  // sharp while being dramatically cheaper to redraw 60x/second.
-  const MAX_DIM = 1600;
-  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  // Cap the internal render resolution independent of screen size/DPR —
+  // a live camera feed doesn't need to be redrawn at full 4K/retina pixel
+  // counts 60 times a second. The canvas is displayed via CSS
+  // object-fit:cover, so ~1920px on the long edge is still full sharp
+  // "1080p-class" quality while being dramatically cheaper to redraw.
+  const MAX_DIM = 1920;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
   let w = window.innerWidth * dpr;
   let h = window.innerHeight * dpr;
   const shrink = Math.min(1, MAX_DIM / Math.max(w, h));
@@ -173,15 +175,16 @@ function resizeCanvases(){
     c.width = w;
     c.height = h;
   });
+  updateFrameGuide();
 }
 
 /* ---------------------------------------------------------------- */
 /* Render loop — draws video + all filter FX onto previewCanvas      */
-/* Optimized for 60fps: expensive per-pixel/per-shape effects        */
-/* (halftone, scanlines, aberration, grain) use cached tiles/patterns */
-/* or downscaled passes instead of doing full-resolution work every  */
-/* single frame. The full-quality versions of these effects are      */
-/* still applied once, at capture time, via applyCaptureFX() below.  */
+/* Both the live preview (every frame) and the instant capture path  */
+/* (once, at the exact shutter moment) share applyPreviewFX() below, */
+/* so the saved photo is guaranteed to look exactly like what was on */
+/* screen — just computed fresh from the camera instead of read back */
+/* from a canvas that could have fallen behind under load.           */
 /* ---------------------------------------------------------------- */
 function renderLoop(t){
   requestAnimationFrame(renderLoop);
@@ -190,92 +193,13 @@ function renderLoop(t){
   const filter = getFilter(FILTERS[state.filterIndex].id);
   const w = previewCanvas.width, h = previewCanvas.height;
 
-  previewCtx.save();
-  previewCtx.filter = filter.css;
-  drawCover(previewCtx, videoEl, w, h);
-  previewCtx.restore();
-
-  // color tint
-  if(filter.tint){
-    previewCtx.fillStyle = filter.tint;
-    previewCtx.fillRect(0,0,w,h);
-  }
-
-  // chromatic aberration: compute the tinted fringe on a small offscreen
-  // canvas (fixed size, independent of screen resolution) then upscale —
-  // ~25x fewer filtered pixels than doing this at full canvas res.
-  if(filter.aberration > 0.15){
-    const temp = getAberrationTemp();
-    const tctx = temp.getContext('2d');
-    const off = filter.aberration * (temp.width/1000);
-    tctx.clearRect(0,0,temp.width,temp.height);
-    tctx.save();
-    tctx.filter = 'brightness(1.4) saturate(2) sepia(1) hue-rotate(-50deg)';
-    drawCover(tctx, videoEl, temp.width, temp.height, off, 0);
-    tctx.filter = 'brightness(1.4) saturate(2) sepia(1) hue-rotate(150deg)';
-    tctx.globalCompositeOperation = 'screen';
-    drawCover(tctx, videoEl, temp.width, temp.height, -off, 0);
-    tctx.restore();
-    previewCtx.save();
-    previewCtx.globalCompositeOperation = 'screen';
-    previewCtx.globalAlpha = 0.16;
-    previewCtx.drawImage(temp, 0, 0, w, h);
-    previewCtx.restore();
-  }
-
-  // dreamy fade
-  if(filter.fade > 0){
-    previewCtx.fillStyle = `rgba(255,255,255,${filter.fade})`;
-    previewCtx.fillRect(0,0,w,h);
-  }
-
-  // film burn edge glow (single gradient fill — cheap)
-  if(filter.burn){
-    const t2 = (t/4000) % 1;
-    const grad = previewCtx.createRadialGradient(w*(0.1+t2*0.1), h*0.85, 0, w*(0.1+t2*0.1), h*0.85, h*0.9);
-    grad.addColorStop(0, 'rgba(255,140,20,0.55)');
-    grad.addColorStop(0.4, 'rgba(255,60,0,0.22)');
-    grad.addColorStop(1, 'rgba(0,0,0,0)');
-    previewCtx.fillStyle = grad;
-    previewCtx.fillRect(0,0,w,h);
-  }
-
-  // VHS scanlines — cached repeating pattern, one fillRect regardless of resolution
-  if(filter.scanlines){
-    previewCtx.save();
-    previewCtx.globalAlpha = 0.35;
-    previewCtx.fillStyle = getScanlinePattern(previewCtx);
-    previewCtx.fillRect(0,0,w,h);
-    previewCtx.restore();
-    if(Math.random() < 0.03){
-      previewCtx.fillStyle = 'rgba(255,255,255,0.08)';
-      const jy = Math.random()*h;
-      previewCtx.fillRect(0, jy, w, 4);
-    }
-  }
-
-  // old magazine halftone dots — cached repeating pattern, one fillRect
-  if(filter.halftone){
-    previewCtx.save();
-    previewCtx.globalAlpha = 0.06;
-    previewCtx.fillStyle = getHalftonePattern(previewCtx, Math.max(4, w/220));
-    previewCtx.fillRect(0,0,w,h);
-    previewCtx.restore();
-  }
-
-  // analog flicker
-  const flicker = 1 + (Math.random()-0.5) * 0.02;
-  previewCtx.save();
-  previewCtx.globalAlpha = Math.abs(flicker-1);
-  previewCtx.fillStyle = flicker > 1 ? '#fff' : '#000';
-  previewCtx.fillRect(0,0,w,h);
-  previewCtx.restore();
+  applyPreviewFX(previewCtx, videoEl, w, h, filter, t);
 
   // ambient DOM overlays reflect current filter strength
   vignetteEl.style.opacity = 0.4 + filter.vignette*0.6;
   lightLeaksEl.style.opacity = filter.leak;
 
-  // grain overlay (cheap small-tile technique, redrawn every 3rd frame) + occasional scratch
+  // grain overlay (redrawn every 3rd frame for perf) + occasional scratch
   grainTick++;
   if(grainTick % 3 === 0){
     drawGrain(filter.grain);
@@ -283,6 +207,93 @@ function renderLoop(t){
   if(filter.scratches > 0 && Math.random() < filter.scratches*0.06){
     drawScratch();
   }
+}
+
+/**
+ * Draws the source video through the current filter's full look — base
+ * color grade, tint, chromatic aberration, fade, film burn, scanlines,
+ * halftone, analog flicker — onto the given context. Used for every live
+ * preview frame AND, once, for the instantly-grabbed capture frame, so
+ * both are pixel-for-pixel the same treatment.
+ */
+function applyPreviewFX(ctx, source, w, h, filter, t){
+  ctx.save();
+  ctx.filter = filter.css;
+  drawCover(ctx, source, w, h);
+  ctx.restore();
+
+  if(filter.tint){
+    ctx.fillStyle = filter.tint;
+    ctx.fillRect(0,0,w,h);
+  }
+
+  // chromatic aberration: computed on a small fixed-size offscreen canvas
+  // and upscaled — same visual result as filtering the full frame twice,
+  // for a fraction of the cost.
+  if(filter.aberration > 0.15){
+    const temp = getAberrationTemp();
+    const tctx = temp.getContext('2d');
+    const off = filter.aberration * (temp.width/1000);
+    tctx.clearRect(0,0,temp.width,temp.height);
+    tctx.save();
+    tctx.filter = 'brightness(1.4) saturate(2) sepia(1) hue-rotate(-50deg)';
+    drawCover(tctx, source, temp.width, temp.height, off, 0);
+    tctx.filter = 'brightness(1.4) saturate(2) sepia(1) hue-rotate(150deg)';
+    tctx.globalCompositeOperation = 'screen';
+    drawCover(tctx, source, temp.width, temp.height, -off, 0);
+    tctx.restore();
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    ctx.globalAlpha = 0.16;
+    ctx.drawImage(temp, 0, 0, w, h);
+    ctx.restore();
+  }
+
+  if(filter.fade > 0){
+    ctx.fillStyle = `rgba(255,255,255,${filter.fade})`;
+    ctx.fillRect(0,0,w,h);
+  }
+
+  if(filter.burn){
+    const t2 = (t/4000) % 1;
+    const grad = ctx.createRadialGradient(w*(0.1+t2*0.1), h*0.85, 0, w*(0.1+t2*0.1), h*0.85, h*0.9);
+    grad.addColorStop(0, 'rgba(255,140,20,0.55)');
+    grad.addColorStop(0.4, 'rgba(255,60,0,0.22)');
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0,0,w,h);
+  }
+
+  // VHS scanlines — cached repeating pattern, one fillRect regardless of resolution
+  if(filter.scanlines){
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = getScanlinePattern(ctx);
+    ctx.fillRect(0,0,w,h);
+    ctx.restore();
+    if(Math.random() < 0.03){
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      const jy = Math.random()*h;
+      ctx.fillRect(0, jy, w, 4);
+    }
+  }
+
+  // old magazine halftone dots — cached repeating pattern, one fillRect
+  if(filter.halftone){
+    ctx.save();
+    ctx.globalAlpha = 0.06;
+    ctx.fillStyle = getHalftonePattern(ctx, Math.max(4, w/220));
+    ctx.fillRect(0,0,w,h);
+    ctx.restore();
+  }
+
+  // analog flicker
+  const flicker = 1 + (Math.random()-0.5) * 0.02;
+  ctx.save();
+  ctx.globalAlpha = Math.abs(flicker-1);
+  ctx.fillStyle = flicker > 1 ? '#fff' : '#000';
+  ctx.fillRect(0,0,w,h);
+  ctx.restore();
 }
 
 let aberrationTemp = null;
@@ -333,7 +344,7 @@ function drawCover(ctx, source, w, h, offX=0, offY=0){
 
 // Small fixed-size noise tile, regenerated periodically and blitted up —
 // far cheaper than writing per-pixel noise at full canvas resolution
-// every frame (which was the single biggest cost in the old render loop).
+// every frame.
 let grainTile = null;
 function drawGrain(intensity){
   if(!grainTile){ grainTile = document.createElement('canvas'); grainTile.width = 320; grainTile.height = 320; }
@@ -367,99 +378,7 @@ function drawScratch(){
   grainCtx.restore();
 }
 
-/**
- * One-time, full-quality cosmetic pass applied to a captured still —
- * grain, aberration, halftone, scanlines, vignette, film burn baked in
- * at full resolution. This is deliberately NOT run every frame (that
- * was the cause of the render lag) — it runs once per photo, after the
- * shutter has already fired, so it never blocks the capture moment.
- */
-function applyCaptureFX(sourceCanvas, filter){
-  const w = sourceCanvas.width, h = sourceCanvas.height;
-  const out = document.createElement('canvas');
-  out.width = w; out.height = h;
-  const ctx = out.getContext('2d');
 
-  ctx.filter = filter.css;
-  ctx.drawImage(sourceCanvas, 0, 0);
-  ctx.filter = 'none';
-
-  if(filter.tint){ ctx.fillStyle = filter.tint; ctx.fillRect(0,0,w,h); }
-
-  if(filter.aberration > 0.15){
-    const off = filter.aberration * (w/1000);
-    ctx.save();
-    ctx.globalCompositeOperation = 'screen';
-    ctx.globalAlpha = 0.16;
-    ctx.filter = 'brightness(1.4) saturate(2) sepia(1) hue-rotate(-50deg)';
-    ctx.drawImage(sourceCanvas, off, 0);
-    ctx.filter = 'brightness(1.4) saturate(2) sepia(1) hue-rotate(150deg)';
-    ctx.drawImage(sourceCanvas, -off, 0);
-    ctx.restore();
-  }
-
-  if(filter.fade > 0){ ctx.fillStyle = `rgba(255,255,255,${filter.fade})`; ctx.fillRect(0,0,w,h); }
-
-  if(filter.burn){
-    const grad = ctx.createRadialGradient(w*0.15, h*0.85, 0, w*0.15, h*0.85, h*0.9);
-    grad.addColorStop(0, 'rgba(255,140,20,0.55)');
-    grad.addColorStop(0.4, 'rgba(255,60,0,0.22)');
-    grad.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = grad; ctx.fillRect(0,0,w,h);
-  }
-
-  if(filter.scanlines){
-    ctx.save(); ctx.globalAlpha = 0.12; ctx.fillStyle = '#000';
-    for(let y=0;y<h;y+=3) ctx.fillRect(0,y,w,1);
-    ctx.restore();
-  }
-
-  if(filter.halftone){
-    ctx.save(); ctx.globalAlpha = 0.06; ctx.fillStyle = '#000';
-    const step = Math.max(4, w/220);
-    for(let y=0;y<h;y+=step){
-      for(let x=(y/step)%2===0?0:step/2; x<w; x+=step){
-        ctx.beginPath(); ctx.arc(x,y, step*0.28, 0, Math.PI*2); ctx.fill();
-      }
-    }
-    ctx.restore();
-  }
-
-  const vg = ctx.createRadialGradient(w/2, h/2, Math.min(w,h)*0.3, w/2, h/2, Math.max(w,h)*0.72);
-  vg.addColorStop(0, 'rgba(0,0,0,0)');
-  vg.addColorStop(1, `rgba(5,2,1,${0.35 + filter.vignette*0.5})`);
-  ctx.fillStyle = vg; ctx.fillRect(0,0,w,h);
-
-  if(filter.grain > 0){
-    const imgData = ctx.createImageData(w, h);
-    const d = imgData.data;
-    const alpha = Math.floor(filter.grain * 70);
-    for(let i=0;i<d.length;i+=4){
-      const v = Math.random()*255;
-      d[i]=v; d[i+1]=v; d[i+2]=v; d[i+3]=alpha;
-    }
-    const tmp = document.createElement('canvas');
-    tmp.width = w; tmp.height = h;
-    tmp.getContext('2d').putImageData(imgData, 0, 0);
-    ctx.drawImage(tmp, 0, 0);
-  }
-
-  if(filter.scratches > 0){
-    for(let i=0;i<3;i++){
-      if(Math.random() < filter.scratches * 2){
-        const x = Math.random()*w;
-        ctx.save();
-        ctx.globalAlpha = 0.2 + Math.random()*0.3;
-        ctx.strokeStyle = Math.random() > 0.5 ? '#fff' : '#111';
-        ctx.lineWidth = (1 + Math.random()) * (w/800);
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x + (Math.random()-0.5)*40*(w/800), h); ctx.stroke();
-        ctx.restore();
-      }
-    }
-  }
-
-  return out;
-}
 
 /* ---------------------------------------------------------------- */
 /* Phase / state machine                                             */
@@ -471,6 +390,7 @@ function setPhase(next){
   filterPanel.setAttribute('aria-hidden', String(next !== 'active'));
   countdownLayer.setAttribute('aria-hidden', String(next !== 'countdown'));
   resultActions.setAttribute('aria-hidden', String(next !== 'result'));
+  frameGuide.setAttribute('aria-hidden', String(!['active','countdown'].includes(next)));
   statusLamp.style.background = next === 'idle' ? '#8a5a3a' : '#e0483c';
 
   if(next === 'idle'){
@@ -514,6 +434,28 @@ timerChoicesEl.addEventListener('click', e => {
   state.timerSeconds = parseInt(btn.dataset.timer, 10);
   [...timerChoicesEl.children].forEach(c => c.classList.toggle('active', c === btn));
 });
+orientationChoicesEl.addEventListener('click', e => {
+  const btn = e.target.closest('.chip'); if(!btn) return;
+  setOrientation(btn.dataset.orientation);
+});
+studioOrientationChoicesEl?.addEventListener('click', e => {
+  const btn = e.target.closest('.chip'); if(!btn) return;
+  setOrientation(btn.dataset.orientation);
+});
+
+function setOrientation(orientation){
+  state.orientation = orientation;
+  [orientationChoicesEl, studioOrientationChoicesEl].forEach(row => {
+    if(!row) return;
+    [...row.children].forEach(c => c.classList.toggle('active', c.dataset.orientation === orientation));
+  });
+  updateFrameGuide();
+  if(state.phase === 'studio') refreshComposedPreview();
+}
+
+function updateFrameGuide(){
+  frameGuide.classList.toggle('orientation-landscape', state.orientation === 'landscape');
+}
 
 startCaptureBtn.addEventListener('click', beginCaptureSequence);
 cancelBtn.addEventListener('click', () => setPhase('idle'));
@@ -568,6 +510,10 @@ function runNextShot(){
   countdownLayer.setAttribute('aria-hidden', 'false');
   audio.beep(660);
 
+  // Wall-clock-synced countdown (requestAnimationFrame against a fixed
+  // target time) instead of setInterval, so it can't drift if the main
+  // thread is briefly busy — the number hitting zero and the actual
+  // capture stay tightly synchronized.
   const target = performance.now() + state.timerSeconds * 1000;
   let lastShown = null;
 
@@ -605,44 +551,65 @@ function pulseZoomIn(){
   previewCanvas.style.transform = 'scaleX(-1) scale(1.06)';
 }
 
-function capturePhoto(){
-  // 1) Grab the CURRENT frame right now, directly from the live video
-  //    element at its native camera resolution — not from the previewCanvas
-  //    (which no longer needs to be a bottleneck, but reading straight from
-  //    the source guarantees the freshest possible pixels and preserves the
-  //    camera's true aspect ratio instead of whatever the screen's aspect
-  //    ratio happens to be).
+/**
+ * Computes a native-resolution, centered crop rectangle from the live
+ * camera feed matching the chosen orientation's aspect ratio (3:4 for
+ * portrait, 4:3 for landscape) — no upscaling, just a precise crop, so
+ * capture quality is never reduced.
+ */
+function getOrientationCropRect(){
   const vw = videoEl.videoWidth || 1280, vh = videoEl.videoHeight || 960;
+  const targetAspect = state.orientation === 'landscape' ? 4/3 : 3/4;
+  const videoAspect = vw / vh;
+  let sw, sh, sx, sy;
+  if(videoAspect > targetAspect){
+    sh = vh;
+    sw = Math.round(vh * targetAspect);
+    sx = Math.round((vw - sw) / 2);
+    sy = 0;
+  } else {
+    sw = vw;
+    sh = Math.round(vw / targetAspect);
+    sx = 0;
+    sy = Math.round((vh - sh) / 2);
+  }
+  return { sx, sy, sw, sh };
+}
+
+function capturePhoto(){
+  // 1) Grab the freshest frame right now — a precise, native-resolution
+  //    crop straight from the camera (matching the chosen orientation and
+  //    exactly what the on-screen frame guide showed), not a frame read
+  //    back from any intermediate canvas that could have fallen behind.
+  const { sx, sy, sw, sh } = getOrientationCropRect();
   const raw = document.createElement('canvas');
-  raw.width = vw; raw.height = vh;
+  raw.width = sw; raw.height = sh;
   const rctx = raw.getContext('2d');
   rctx.save();
-  rctx.translate(vw, 0);
+  rctx.translate(sw, 0);
   rctx.scale(-1, 1); // mirror, matching what the user sees on screen
-  rctx.drawImage(videoEl, 0, 0, vw, vh);
+  rctx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, sw, sh);
   rctx.restore();
 
-  // 2) Fire the perceptual feedback immediately — the pixels are already
-  //    safely captured above, so none of this can delay or go stale.
+  // 2) Fire the shutter feedback immediately — the pixels above are
+  //    already safely captured, so nothing after this can delay or
+  //    change what was recorded.
   audio.shutter();
   flashEl.classList.remove('flash-fire'); void flashEl.offsetWidth;
   flashEl.classList.add('flash-fire');
   previewCanvas.style.transform = 'scaleX(-1) scale(1)';
   countdownLayer.setAttribute('aria-hidden', 'true');
 
-  // 3) Apply the chosen filter's full cosmetic treatment (grain, aberration,
-  //    vignette, etc.) as a one-time pass — deferred one tick so it can
-  //    never block the capture moment above, but still finishes well
-  //    within the pause before the next shot.
+  // 3) Apply the exact same cosmetic treatment the live preview was
+  //    showing (tint/aberration/fade/burn/scanlines/halftone/flicker),
+  //    once, at full quality — this can't delay the capture above since
+  //    the frame is already saved by this point.
   const filter = getFilter(FILTERS[state.filterIndex].id);
-  setTimeout(() => {
-    const finished = applyCaptureFX(raw, filter);
-    state.shots.push(finished.toDataURL('image/jpeg', 0.92));
-    advanceCaptureSequence();
-  }, 0);
-}
+  const finalCanvas = document.createElement('canvas');
+  finalCanvas.width = sw; finalCanvas.height = sh;
+  applyPreviewFX(finalCanvas.getContext('2d'), raw, sw, sh, filter, performance.now());
+  state.shots.push(finalCanvas.toDataURL('image/jpeg', 0.92));
 
-function advanceCaptureSequence(){
   state.shotIndex++;
   if(state.shotIndex < state.layout){
     setTimeout(() => {
@@ -653,6 +620,7 @@ function advanceCaptureSequence(){
     setTimeout(openStudio, 700);
   }
 }
+
 
 /* ---------------------------------------------------------------- */
 /* STUDIO — layout designer, backgrounds, stickers, text, adjustments*/
@@ -671,6 +639,10 @@ function openStudio(){
   buildStickerPicker();
   buildAdjustPhotoSelect();
   buildAdjustSliders();
+  [orientationChoicesEl, studioOrientationChoicesEl].forEach(row => {
+    if(!row) return;
+    [...row.children].forEach(c => c.classList.toggle('active', c.dataset.orientation === state.orientation));
+  });
   refreshComposedPreview();
 }
 
@@ -683,19 +655,10 @@ function buildTemplateGrid(){
     btn.addEventListener('click', () => {
       state.templateId = t.id;
       [...templateGrid.children].forEach(c => c.classList.toggle('active', c === btn));
-      updateDualSheetVisibility();
       refreshComposedPreview();
     });
     templateGrid.appendChild(btn);
   });
-  updateDualSheetVisibility();
-}
-
-function updateDualSheetVisibility(){
-  const tpl = LAYOUT_TEMPLATES.find(t => t.id === state.templateId);
-  const isStrip2x6 = tpl?.kind === 'strip2x6';
-  dualSheetRow.setAttribute('aria-hidden', String(!isStrip2x6));
-  if(!isStrip2x6) dualSheetToggle.checked = false;
 }
 
 function buildBackgroundGrid(){
@@ -830,6 +793,7 @@ function refreshComposedPreview(){
       spacing: parseInt(spacingInput.value, 10),
       printSize: printSizeSelect.value,
       background: state.backgroundId,
+      orientation: state.orientation,
     };
     const tpl = LAYOUT_TEMPLATES.find(t => t.id === state.templateId);
     const needed = tpl.shots;
@@ -887,13 +851,12 @@ async function finishAndPrint(){
     spacing: parseInt(spacingInput.value, 10),
     printSize: printSizeSelect.value,
     background: state.backgroundId,
+    orientation: state.orientation,
   };
   const tpl = LAYOUT_TEMPLATES.find(t => t.id === state.templateId);
   const slice = photosToUse.slice(0, tpl.shots);
   const finalCanvas = await composeLayout(state.templateId, slice, opts);
   const fctx = finalCanvas.getContext('2d');
-  state.lastPrintDpi = PRINT_DPI[printSizeSelect.value] || 300;
-  state.dualSheetMode = tpl.kind === 'strip2x6' && dualSheetToggle.checked;
 
   // 2. bake stickers & text overlays (mapped from the studio preview's % coordinates)
   if(overlays && !overlays.isEmpty()) await overlays.drawToCanvas(fctx, finalCanvas.width, finalCanvas.height);
@@ -967,19 +930,12 @@ SOCIAL_PRESETS.forEach(p => {
   socialPresetSelect.appendChild(opt);
 });
 
-function getExportCanvas(){
-  if(state.dualSheetMode){
-    return composeDualStripSheet(stripCanvas, { printDpi: state.lastPrintDpi });
-  }
-  return stripCanvas;
-}
-
-downloadBtn.addEventListener('click', () => downloadCanvasAs(getExportCanvas(), `lumiere-${Date.now()}.png`, 'image/png'));
-downloadJpegBtn.addEventListener('click', () => downloadCanvasAs(getExportCanvas(), `lumiere-${Date.now()}.jpg`, 'image/jpeg', 0.92));
-downloadHiResBtn.addEventListener('click', () => downloadCanvasAs(exportHiRes(getExportCanvas(), 3), `lumiere-hires-${Date.now()}.png`, 'image/png'));
-downloadPdfBtn.addEventListener('click', () => exportPDF(getExportCanvas(), `lumiere-${Date.now()}.pdf`));
-printBtn.addEventListener('click', () => printCanvas(getExportCanvas()));
-shareBtn.addEventListener('click', () => shareCanvas(getExportCanvas()));
+downloadBtn.addEventListener('click', () => downloadCanvasAs(stripCanvas, `lumiere-${Date.now()}.png`, 'image/png'));
+downloadJpegBtn.addEventListener('click', () => downloadCanvasAs(stripCanvas, `lumiere-${Date.now()}.jpg`, 'image/jpeg', 0.92));
+downloadHiResBtn.addEventListener('click', () => downloadCanvasAs(exportHiRes(stripCanvas, 3), `lumiere-hires-${Date.now()}.png`, 'image/png'));
+downloadPdfBtn.addEventListener('click', () => exportPDF(stripCanvas, `lumiere-${Date.now()}.pdf`));
+printBtn.addEventListener('click', () => printCanvas(stripCanvas));
+shareBtn.addEventListener('click', () => shareCanvas(stripCanvas));
 downloadSocialBtn.addEventListener('click', () => {
   const presetId = socialPresetSelect.value;
   const out = presetId ? resizeForSocial(stripCanvas, presetId) : stripCanvas;
@@ -1073,6 +1029,7 @@ soundToggle.addEventListener('click', () => {
 /* Boot                                                               */
 /* ---------------------------------------------------------------- */
 buildFilterStrip();
+updateFrameGuide();
 permissionNotice.setAttribute('aria-hidden', 'false');
 idleHint.setAttribute('aria-hidden', 'true');
 
