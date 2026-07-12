@@ -66,6 +66,31 @@ button{ font-family:'Work Sans', sans-serif; cursor:pointer; }
   background: radial-gradient(ellipse at center, rgba(0,0,0,0) 40%, rgba(5,2,1,.55) 78%, rgba(5,2,1,.92) 100%);
 }
 
+/* Orientation frame guide — shows exactly the area that will be captured,
+   without disturbing the fullscreen immersive camera background. */
+#frameGuide{
+  position:absolute; top:50%; left:50%; transform: translate(-50%,-50%);
+  pointer-events:none; z-index:3;
+  border: 2px solid rgba(241,228,200,.55);
+  border-radius: 14px;
+  box-shadow: 0 0 0 2000px rgba(5,2,1,.35);
+  transition: width .35s var(--ease-out), height .35s var(--ease-out), opacity .3s;
+  height: 70vh; width: calc(70vh * 3 / 4); /* portrait default */
+  max-width: 92vw; max-height: 82vh;
+}
+#frameGuide.orientation-landscape{
+  width: 82vw; height: calc(82vw * 3 / 4);
+  max-width: 92vw; max-height: 78vh;
+}
+.frame-guide-corner{
+  position:absolute; width:22px; height:22px;
+  border: 3px solid var(--brass-bright);
+}
+.frame-guide-corner.tl{ top:-2px; left:-2px; border-right:none; border-bottom:none; border-top-left-radius:12px; }
+.frame-guide-corner.tr{ top:-2px; right:-2px; border-left:none; border-bottom:none; border-top-right-radius:12px; }
+.frame-guide-corner.bl{ bottom:-2px; left:-2px; border-right:none; border-top:none; border-bottom-left-radius:12px; }
+.frame-guide-corner.br{ bottom:-2px; right:-2px; border-left:none; border-top:none; border-bottom-right-radius:12px; }
+
 #lightLeaks{ position:absolute; inset:0; pointer-events:none; mix-blend-mode: screen; opacity:.5; }
 .leak{
   position:absolute; border-radius:50%;
@@ -410,9 +435,6 @@ button{ font-family:'Work Sans', sans-serif; cursor:pointer; }
 .field-inline input[type="checkbox"]{ accent-color: var(--brass); width:16px; height:16px; }
 .btn-secondary.full{ width:100%; margin:.4rem 0; }
 .divider{ border:none; border-top:1px solid var(--glass-border); margin:.9rem 0; }
-.hint-text{ font-size:.68rem; color: var(--cream-soft); opacity:.6; line-height:1.4; margin:.2rem 0 .6rem; }
-.checkbox-inline{ display:flex; align-items:center; gap:.4rem; font-size:.78rem; color: var(--cream-soft); flex:1; }
-.checkbox-inline input{ accent-color: var(--brass); width:16px; height:16px; }
 
 /* ---------------- UTILITY BAR ---------------- */
 #utilityBar{ position:absolute; top:1.2rem; left:1.2rem; z-index:60; display:flex; gap:.5rem; }
