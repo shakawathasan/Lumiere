@@ -2,6 +2,12 @@
 // composeLayout() draws photos + paper/background + border into a canvas;
 // the caller bakes stickers/text on top afterward via OverlayManager, then
 // adds the footer (timestamp/caption/logo) the same way the solo strip did.
+//
+// Every template has a portrait and a landscape arrangement (opts.orientation,
+// default 'portrait'). Orientation reshapes the overall page/canvas and how
+// cells are arranged — it does NOT change how an individual photo is fitted
+// into its cell, which stays exactly as it always has (cover-fit, i.e. the
+// photo fills its cell and any excess is cropped, matching prior behavior).
 
 export const LAYOUT_TEMPLATES = [
   { id: 'classic2', name: 'Classic 2-Photo', shots: 2, kind: 'strip' },
@@ -17,22 +23,9 @@ export const LAYOUT_TEMPLATES = [
   { id: 'passport', name: 'Passport Photos', shots: 6, kind: 'passport' },
   { id: 'miniPrints', name: 'Mini Prints Sheet', shots: 6, kind: 'miniPrints' },
   { id: 'greetingCard', name: 'Greeting Card', shots: 1, kind: 'greetingCard' },
-  // Print-accurate templates (real-inch sizing at 150/300/450 DPI, see PRINT_DPI below)
-  { id: 'strip2x6-3', name: 'Classic 2×6 Strip (3 Photos)', shots: 3, kind: 'strip2x6', physical: true },
-  { id: 'strip2x6-4', name: 'Classic 2×6 Strip (4 Photos)', shots: 4, kind: 'strip2x6', physical: true },
-  { id: 'postcard4x6-1', name: '4×6 Postcard · One Photo', shots: 1, kind: 'postcard4x6', physical: true },
-  { id: 'postcard4x6-2', name: '4×6 Postcard · Two Photos', shots: 2, kind: 'postcard4x6', physical: true },
-  { id: 'postcard4x6-3', name: '4×6 Postcard · Three-Photo Collage', shots: 3, kind: 'postcard4x6', physical: true },
-  { id: 'postcard4x6-4', name: '4×6 Postcard · Four-Photo Collage', shots: 4, kind: 'postcard4x6', physical: true },
-  { id: 'postcard4x6-custom', name: '4×6 Postcard · Custom Collage', shots: 5, kind: 'postcard4x6', physical: true },
 ];
 
-// Real print-resolution DPI per "print size" choice, used only by the
-// physically-accurate templates above (strip2x6 / postcard4x6) so a
-// selected 2×6 or 4×6 template is always dimensionally correct — "size"
-// there means print quality/DPI, not a shrink/stretch of the physical
-// paper size the way it does for the legacy templates.
-export const PRINT_DPI = { small: 150, medium: 300, large: 450 };
+export const ORIENTATIONS = ['portrait', 'landscape'];
 
 export const BACKGROUND_STYLES = [
   { id: 'cream', name: 'Cream Paper', type: 'solid', a: '#fbf7ee', b: '#f2ead9' },
@@ -135,18 +128,16 @@ async function loadImage(src) {
   return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
 }
 
+// Unchanged from before: photos fill their cell (cover-fit), cropping any
+// excess — this is the existing, preserved behavior for individual photos.
 function drawPhotoInCell(ctx, img, x, y, w, h, r, borderColor) {
   roundRectPath(ctx, x, y, w, h, r);
   ctx.save(); ctx.clip();
-  // contain-fit: the ENTIRE photo is always visible, at its true aspect
-  // ratio — never cropped, zoomed, stretched, or distorted. Any leftover
-  // space inside the cell simply shows the page/mat background already
-  // painted underneath (drawPhotoInCell always runs after paintBackground).
   const ir = img.width / img.height, cr = w / h;
-  let dw, dh, dx, dy;
-  if (ir > cr) { dw = w; dh = w / ir; dx = x; dy = y + (h - dh) / 2; }
-  else { dh = h; dw = h * ir; dy = y; dx = x + (w - dw) / 2; }
-  ctx.drawImage(img, dx, dy, dw, dh);
+  let sw, sh, sx, sy;
+  if (ir > cr) { sh = img.height; sw = sh * cr; sy = 0; sx = (img.width - sw) / 2; }
+  else { sw = img.width; sh = sw / cr; sx = 0; sy = (img.height - sh) / 2; }
+  ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
   ctx.restore();
   ctx.strokeStyle = borderColor || 'rgba(0,0,0,0.08)';
   ctx.lineWidth = 1;
@@ -157,16 +148,16 @@ function drawPhotoInCell(ctx, img, x, y, w, h, r, borderColor) {
 /**
  * @param {string} templateId one of LAYOUT_TEMPLATES ids
  * @param {string[]} photoDataUrls
- * @param {{borderColor?:string, cornerRadius?:number, spacing?:number, background?:string, paperTexture?:boolean, printSize?:'small'|'medium'|'large'}} opts
+ * @param {{borderColor?:string, cornerRadius?:number, spacing?:number, background?:string, paperTexture?:boolean, printSize?:'small'|'medium'|'large', orientation?:'portrait'|'landscape'}} opts
  */
 export async function composeLayout(templateId, photoDataUrls, opts = {}) {
   const tpl = LAYOUT_TEMPLATES.find(t => t.id === templateId) || LAYOUT_TEMPLATES[2];
   const bg = BACKGROUND_STYLES.find(b => b.id === opts.background) || BACKGROUND_STYLES[0];
   const scale = { small: 0.8, medium: 1, large: 1.4 }[opts.printSize || 'medium'];
-  const printDpi = PRINT_DPI[opts.printSize || 'medium'];
   const r = (opts.cornerRadius ?? 10) * scale;
   const gap = (opts.spacing ?? 14) * scale;
   const border = (opts.borderColor && opts.borderColor !== 'none') ? opts.borderColor : null;
+  const orientation = opts.orientation === 'landscape' ? 'landscape' : 'portrait';
 
   const images = await Promise.all(photoDataUrls.map(loadImage));
   const canvas = document.createElement('canvas');
@@ -176,17 +167,44 @@ export async function composeLayout(templateId, photoDataUrls, opts = {}) {
     strip: buildStrip, polaroid: buildPolaroid, grid: buildGrid, postcard: buildPostcard,
     postcardCollage: buildPostcardCollage, scrapbook: buildScrapbook, filmNegative: buildFilmNegative,
     passport: buildPassport, miniPrints: buildMiniPrints, greetingCard: buildGreetingCard,
-    strip2x6: buildStrip2x6, postcard4x6: buildPostcard4x6,
   };
-  await builders[tpl.kind](canvas, ctx, images, tpl, { scale, printDpi, r, gap, border, bg, paperTexture: opts.paperTexture !== false });
+  await builders[tpl.kind](canvas, ctx, images, tpl, { scale, r, gap, border, bg, orientation, paperTexture: opts.paperTexture !== false });
   return canvas;
 }
 
+/* ---------------------------------------------------------------------
+   Each builder below takes o.orientation ('portrait' | 'landscape') and
+   arranges its cells accordingly. Portrait is each template's traditional/
+   default arrangement; landscape reflows the same photo count into a
+   wider, shorter composition (transposing stacks into rows, adjusting
+   grid columns, etc.) rather than just stretching the portrait version.
+--------------------------------------------------------------------- */
+
 function buildStrip(canvas, ctx, images, tpl, o) {
-  const photoW = 480 * o.scale, photoH = 320 * o.scale, edge = 26 * o.scale, footerH = 90 * o.scale;
   const n = images.length;
+  const footer = 90 * o.scale;
+  const edge = 26 * o.scale;
+
+  if (o.orientation === 'landscape') {
+    // photos arranged left-to-right in a row instead of stacked vertically
+    const photoW = 320 * o.scale, photoH = 300 * o.scale;
+    canvas.width = edge + n * photoW + (n - 1) * o.gap + edge;
+    canvas.height = edge + photoH + footer;
+    roundRectPath(ctx, 0, 0, canvas.width, canvas.height, 18 * o.scale); ctx.save(); ctx.clip();
+    paintBackground(ctx, canvas.width, canvas.height, o.bg);
+    images.forEach((img, i) => {
+      const x = edge + i * (photoW + o.gap);
+      drawPhotoInCell(ctx, img, x, edge, photoW, photoH, o.r, o.border);
+    });
+    if (o.paperTexture) paperNoise(ctx, canvas.width, canvas.height);
+    ctx.restore();
+    return;
+  }
+
+  // portrait (default): classic stacked strip
+  const photoW = 480 * o.scale, photoH = 320 * o.scale;
   canvas.width = photoW + edge * 2;
-  canvas.height = edge + n * photoH + (n - 1) * o.gap + footerH;
+  canvas.height = edge + n * photoH + (n - 1) * o.gap + footer;
   roundRectPath(ctx, 0, 0, canvas.width, canvas.height, 18 * o.scale); ctx.save(); ctx.clip();
   paintBackground(ctx, canvas.width, canvas.height, o.bg);
   images.forEach((img, i) => {
@@ -198,7 +216,9 @@ function buildStrip(canvas, ctx, images, tpl, o) {
 }
 
 function buildPolaroid(canvas, ctx, images, tpl, o) {
-  const photoW = 460 * o.scale, photoH = 400 * o.scale, edge = 22 * o.scale, footerH = 110 * o.scale;
+  const edge = 22 * o.scale, footerH = 110 * o.scale;
+  const photoW = o.orientation === 'landscape' ? 460 * o.scale : 400 * o.scale;
+  const photoH = o.orientation === 'landscape' ? 340 * o.scale : 460 * o.scale;
   canvas.width = photoW + edge * 2; canvas.height = edge + photoH + footerH;
   roundRectPath(ctx, 0, 0, canvas.width, canvas.height, 6 * o.scale); ctx.save(); ctx.clip();
   paintBackground(ctx, canvas.width, canvas.height, o.bg);
@@ -208,14 +228,21 @@ function buildPolaroid(canvas, ctx, images, tpl, o) {
 
 function buildGrid(canvas, ctx, images, tpl, o) {
   const cols = tpl.cols, rows = Math.ceil(images.length / cols);
-  const cell = 260 * o.scale, edge = 20 * o.scale, footerH = 80 * o.scale;
-  canvas.width = edge * 2 + cols * cell + (cols - 1) * o.gap;
-  canvas.height = edge + rows * cell + (rows - 1) * o.gap + footerH;
+  const cell = 260 * o.scale;
+  const footerH = 80 * o.scale;
+  // portrait: extra vertical breathing room above the grid; landscape:
+  // extra horizontal margin either side — the grid itself (inherently
+  // square-celled) stays the same arrangement, matching how real square
+  // photo grids are typically printed regardless of paper orientation.
+  const edgeV = (o.orientation === 'landscape' ? 20 : 34) * o.scale;
+  const edgeH = (o.orientation === 'landscape' ? 34 : 20) * o.scale;
+  canvas.width = edgeH * 2 + cols * cell + (cols - 1) * o.gap;
+  canvas.height = edgeV + rows * cell + (rows - 1) * o.gap + footerH;
   roundRectPath(ctx, 0, 0, canvas.width, canvas.height, 16 * o.scale); ctx.save(); ctx.clip();
   paintBackground(ctx, canvas.width, canvas.height, o.bg);
   images.forEach((img, i) => {
     const col = i % cols, row = Math.floor(i / cols);
-    const x = edge + col * (cell + o.gap), y = edge + row * (cell + o.gap);
+    const x = edgeH + col * (cell + o.gap), y = edgeV + row * (cell + o.gap);
     drawPhotoInCell(ctx, img, x, y, cell, cell, o.r, o.border);
   });
   if (o.paperTexture) paperNoise(ctx, canvas.width, canvas.height);
@@ -223,11 +250,24 @@ function buildGrid(canvas, ctx, images, tpl, o) {
 }
 
 function buildPostcard(canvas, ctx, images, tpl, o) {
+  const edge = 20 * o.scale;
+  if (o.orientation === 'portrait') {
+    canvas.width = 480 * o.scale; canvas.height = 700 * o.scale;
+    paintBackground(ctx, canvas.width, canvas.height, o.bg);
+    drawPhotoInCell(ctx, images[0], edge, edge, canvas.width - edge * 2, canvas.height * 0.72, o.r, o.border);
+    const dividerY = canvas.height * 0.76;
+    ctx.strokeStyle = 'rgba(0,0,0,.15)'; ctx.setLineDash([6, 4]);
+    ctx.beginPath(); ctx.moveTo(edge, dividerY); ctx.lineTo(canvas.width - edge, dividerY); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(0,0,0,.25)';
+    roundRectPath(ctx, canvas.width - edge - 70 * o.scale, dividerY + 10 * o.scale, 60 * o.scale, 46 * o.scale, 4);
+    ctx.stroke();
+    return;
+  }
+  // landscape (default/classic postcard shape)
   canvas.width = 700 * o.scale; canvas.height = 480 * o.scale;
   paintBackground(ctx, canvas.width, canvas.height, o.bg);
-  const edge = 20 * o.scale;
   drawPhotoInCell(ctx, images[0], edge, edge, canvas.width - edge * 2, canvas.height * 0.68, o.r, o.border);
-  // postcard divider + stamp corner, drawn on the "back" strip below
   const dividerY = canvas.height * 0.72;
   ctx.strokeStyle = 'rgba(0,0,0,.15)'; ctx.setLineDash([6, 4]);
   ctx.beginPath(); ctx.moveTo(canvas.width / 2, dividerY); ctx.lineTo(canvas.width / 2, canvas.height - edge); ctx.stroke();
@@ -238,9 +278,25 @@ function buildPostcard(canvas, ctx, images, tpl, o) {
 }
 
 function buildPostcardCollage(canvas, ctx, images, tpl, o) {
+  const edge = 20 * o.scale;
+  if (o.orientation === 'portrait') {
+    // big photo on top, two small photos side by side below
+    canvas.width = 480 * o.scale; canvas.height = 700 * o.scale;
+    paintBackground(ctx, canvas.width, canvas.height, o.bg);
+    const big = { x: edge, y: edge, w: canvas.width - edge * 2, h: canvas.height * 0.58 };
+    drawPhotoInCell(ctx, images[0], big.x, big.y, big.w, big.h, o.r, o.border);
+    const smallH = canvas.height - big.h - edge * 3;
+    const smallW = (big.w - o.gap) / 2;
+    [images[1], images[2]].forEach((img, i) => {
+      if (!img) return;
+      drawPhotoInCell(ctx, img, edge + i * (smallW + o.gap), big.y + big.h + edge, smallW, smallH, o.r, o.border);
+    });
+    return;
+  }
+  // landscape (default): big photo left, two small photos stacked right
   canvas.width = 700 * o.scale; canvas.height = 480 * o.scale;
   paintBackground(ctx, canvas.width, canvas.height, o.bg);
-  const edge = 20 * o.scale, big = { x: edge, y: edge, w: canvas.width * 0.55, h: canvas.height - edge * 2 };
+  const big = { x: edge, y: edge, w: canvas.width * 0.55, h: canvas.height - edge * 2 };
   drawPhotoInCell(ctx, images[0], big.x, big.y, big.w, big.h, o.r, o.border);
   const smallW = canvas.width - big.w - edge * 3;
   const smallH = (big.h - o.gap) / 2;
@@ -251,20 +307,21 @@ function buildPostcardCollage(canvas, ctx, images, tpl, o) {
 }
 
 function buildScrapbook(canvas, ctx, images, tpl, o) {
-  canvas.width = 720 * o.scale; canvas.height = 620 * o.scale;
+  const landscape = o.orientation === 'landscape';
+  canvas.width = (landscape ? 720 : 620) * o.scale;
+  canvas.height = (landscape ? 620 : 720) * o.scale;
   paintBackground(ctx, canvas.width, canvas.height, o.bg);
   const positions = [
-    { x: 0.08, y: 0.08, w: 0.4, h: 0.38, rot: -4 },
-    { x: 0.52, y: 0.05, w: 0.4, h: 0.34, rot: 5 },
-    { x: 0.06, y: 0.5, w: 0.38, h: 0.4, rot: 3 },
-    { x: 0.5, y: 0.48, w: 0.42, h: 0.42, rot: -3 },
+    { x: 0.08, y: 0.06, w: 0.4, h: 0.36, rot: -4 },
+    { x: 0.52, y: 0.04, w: 0.4, h: 0.32, rot: 5 },
+    { x: 0.06, y: 0.48, w: 0.38, h: 0.4, rot: 3 },
+    { x: 0.5, y: 0.46, w: 0.42, h: 0.42, rot: -3 },
   ];
   images.slice(0, 4).forEach((img, i) => {
     const p = positions[i]; if (!p) return;
     const x = p.x * canvas.width, y = p.y * canvas.height, w = p.w * canvas.width, h = p.h * canvas.height;
     ctx.save();
     ctx.translate(x + w / 2, y + h / 2); ctx.rotate((p.rot * Math.PI) / 180); ctx.translate(-w / 2, -h / 2);
-    // white polaroid-ish backing
     ctx.fillStyle = '#fff'; ctx.shadowColor = 'rgba(0,0,0,.25)'; ctx.shadowBlur = 12; ctx.shadowOffsetY = 4;
     roundRectPath(ctx, -6, -6, w + 12, h + 26, 4); ctx.fill();
     ctx.shadowColor = 'transparent';
@@ -274,11 +331,39 @@ function buildScrapbook(canvas, ctx, images, tpl, o) {
 }
 
 function buildFilmNegative(canvas, ctx, images, tpl, o) {
-  const cellW = 300 * o.scale, cellH = 200 * o.scale, edge = 16 * o.scale, sprocket = 10 * o.scale;
+  const edge = 16 * o.scale, sprocket = 10 * o.scale;
+
+  if (o.orientation === 'portrait') {
+    // vertical filmstrip: frames stacked top-to-bottom, sprockets on the sides
+    const cellW = 220 * o.scale, cellH = 160 * o.scale;
+    canvas.width = cellW + edge * 2 + sprocket * 2 + 4;
+    canvas.height = edge * 2 + images.length * cellH + (images.length - 1) * o.gap;
+    ctx.fillStyle = '#0d0703'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    for (let y = 8; y < canvas.height - 8; y += 26 * o.scale) {
+      ctx.fillStyle = '#241710';
+      roundRectPath(ctx, 6, y, sprocket, 14 * o.scale, 3); ctx.fill();
+      roundRectPath(ctx, canvas.width - sprocket - 6, y, sprocket, 14 * o.scale, 3); ctx.fill();
+    }
+    images.forEach((img, i) => {
+      const x = edge + sprocket, y = edge + i * (cellH + o.gap);
+      ctx.save();
+      ctx.filter = 'grayscale(.4) contrast(1.1) brightness(1.1)';
+      drawPhotoInCell(ctx, img, x, y, cellW, cellH, 2, 'rgba(255,255,255,.4)');
+      ctx.restore();
+      ctx.save();
+      roundRectPath(ctx, x, y, cellW, cellH, 2); ctx.clip();
+      ctx.fillStyle = 'rgba(255,120,40,.18)';
+      ctx.fillRect(x, y, cellW, cellH);
+      ctx.restore();
+    });
+    return;
+  }
+
+  // landscape (default): classic horizontal filmstrip
+  const cellW = 300 * o.scale, cellH = 200 * o.scale;
   canvas.width = edge * 2 + images.length * cellW + (images.length - 1) * o.gap;
   canvas.height = cellH + edge * 2 + sprocket * 2 + 4;
   ctx.fillStyle = '#0d0703'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  // sprocket holes along top & bottom
   for (let x = 8; x < canvas.width - 8; x += 26 * o.scale) {
     ctx.fillStyle = '#241710';
     roundRectPath(ctx, x, 6, 14 * o.scale, sprocket, 3); ctx.fill();
@@ -290,7 +375,6 @@ function buildFilmNegative(canvas, ctx, images, tpl, o) {
     ctx.filter = 'grayscale(.4) contrast(1.1) brightness(1.1)';
     drawPhotoInCell(ctx, img, x, y, cellW, cellH, 2, 'rgba(255,255,255,.4)');
     ctx.restore();
-    // orange negative-tint wash, clipped to the same rounded cell
     ctx.save();
     roundRectPath(ctx, x, y, cellW, cellH, 2); ctx.clip();
     ctx.fillStyle = 'rgba(255,120,40,.18)';
@@ -300,20 +384,22 @@ function buildFilmNegative(canvas, ctx, images, tpl, o) {
 }
 
 function buildPassport(canvas, ctx, images, tpl, o) {
-  const cell = 140 * o.scale, edge = 20 * o.scale, cols = 3;
+  const cell = 140 * o.scale, edge = 20 * o.scale;
+  const cols = o.orientation === 'landscape' ? 3 : 2;
   const rows = Math.ceil(images.length / cols);
   canvas.width = edge * 2 + cols * cell + (cols - 1) * o.gap;
-  canvas.height = edge * 2 + rows * cell + (rows - 1) * o.gap;
+  canvas.height = edge * 2 + rows * cell * 1.15 + (rows - 1) * o.gap;
   paintBackground(ctx, canvas.width, canvas.height, o.bg);
   images.forEach((img, i) => {
     const col = i % cols, row = Math.floor(i / cols);
-    const x = edge + col * (cell + o.gap), y = edge + row * (cell + o.gap);
+    const x = edge + col * (cell + o.gap), y = edge + row * (cell * 1.15 + o.gap);
     drawPhotoInCell(ctx, img, x, y, cell, cell * 1.15, 2, o.border || '#999');
   });
 }
 
 function buildMiniPrints(canvas, ctx, images, tpl, o) {
-  const cell = 200 * o.scale, cols = 3, edge = 18 * o.scale;
+  const cell = 200 * o.scale, edge = 18 * o.scale;
+  const cols = o.orientation === 'landscape' ? 3 : 2;
   const rows = Math.ceil(images.length / cols);
   canvas.width = edge * 2 + cols * cell + (cols - 1) * o.gap;
   canvas.height = edge * 2 + rows * (cell * 0.72) + (rows - 1) * o.gap;
@@ -328,135 +414,23 @@ function buildMiniPrints(canvas, ctx, images, tpl, o) {
 }
 
 function buildGreetingCard(canvas, ctx, images, tpl, o) {
+  const edge = 30 * o.scale;
+  if (o.orientation === 'landscape') {
+    canvas.width = 700 * o.scale; canvas.height = 520 * o.scale;
+    paintBackground(ctx, canvas.width, canvas.height, o.bg);
+    drawPhotoInCell(ctx, images[0], edge, edge, canvas.width * 0.6 - edge, canvas.height - edge * 2, o.r, o.border);
+    ctx.strokeStyle = 'rgba(0,0,0,.12)'; ctx.setLineDash([5, 5]);
+    ctx.beginPath(); ctx.moveTo(canvas.width * 0.62, 0); ctx.lineTo(canvas.width * 0.62, canvas.height); ctx.stroke();
+    ctx.setLineDash([]);
+    return;
+  }
+  // portrait (default)
   canvas.width = 520 * o.scale; canvas.height = 700 * o.scale;
   paintBackground(ctx, canvas.width, canvas.height, o.bg);
-  const edge = 30 * o.scale;
   drawPhotoInCell(ctx, images[0], edge, edge, canvas.width - edge * 2, canvas.height * 0.62, o.r, o.border);
-  // fold line
   ctx.strokeStyle = 'rgba(0,0,0,.12)'; ctx.setLineDash([5, 5]);
   ctx.beginPath(); ctx.moveTo(0, canvas.height * 0.7); ctx.lineTo(canvas.width, canvas.height * 0.7); ctx.stroke();
   ctx.setLineDash([]);
-}
-
-/* ---------------------------------------------------------------------
-   Print-accurate templates: real inches × DPI, so "2×6" and "4×6" are
-   dimensionally exact rather than arbitrary pixel sizes. printSize here
-   selects DPI (150/300/450) — print quality — not physical paper size.
---------------------------------------------------------------------- */
-
-function buildStrip2x6(canvas, ctx, images, tpl, o) {
-  const dpi = o.printDpi;
-  const W = Math.round(2 * dpi), H = Math.round(6 * dpi);
-  canvas.width = W; canvas.height = H;
-  const r = Math.min(o.r, W * 0.06);
-  roundRectPath(ctx, 0, 0, W, H, r); ctx.save(); ctx.clip();
-  paintBackground(ctx, W, H, o.bg);
-
-  const edge = Math.round(0.12 * dpi);
-  const footerH = Math.round(0.42 * dpi);
-  const gap = Math.min(o.gap, dpi * 0.045);
-  const n = images.length;
-  const photoW = W - edge * 2;
-  const availH = H - edge * 2 - footerH;
-  const photoH = (availH - (n - 1) * gap) / n;
-
-  images.forEach((img, i) => {
-    const y = edge + i * (photoH + gap);
-    drawPhotoInCell(ctx, img, edge, y, photoW, photoH, Math.min(o.r, photoW * 0.04), o.border);
-  });
-
-  if (o.paperTexture) paperNoise(ctx, W, H, 0.025);
-  ctx.restore();
-}
-
-/** Generic 1..N cell arrangement used by the flexible 4×6 postcard templates. */
-function flexCellLayout(n, W, H, gap) {
-  const cells = [];
-  if (n <= 1) {
-    cells.push({ x: 0, y: 0, w: W, h: H });
-  } else if (n === 2) {
-    const w = (W - gap) / 2;
-    cells.push({ x: 0, y: 0, w, h: H }, { x: w + gap, y: 0, w, h: H });
-  } else if (n === 3) {
-    const topH = (H - gap) * 0.55, botH = H - gap - topH;
-    const w = (W - gap) / 2;
-    cells.push({ x: 0, y: 0, w: W, h: topH });
-    cells.push({ x: 0, y: topH + gap, w, h: botH });
-    cells.push({ x: w + gap, y: topH + gap, w, h: botH });
-  } else if (n === 4) {
-    const w = (W - gap) / 2, h = (H - gap) / 2;
-    cells.push({ x: 0, y: 0, w, h }, { x: w + gap, y: 0, w, h }, { x: 0, y: h + gap, w, h }, { x: w + gap, y: h + gap, w, h });
-  } else {
-    const cols = Math.ceil(Math.sqrt(n)), rows = Math.ceil(n / cols);
-    const w = (W - gap * (cols - 1)) / cols, h = (H - gap * (rows - 1)) / rows;
-    for (let i = 0; i < n; i++) {
-      const col = i % cols, row = Math.floor(i / cols);
-      cells.push({ x: col * (w + gap), y: row * (h + gap), w, h });
-    }
-  }
-  return cells;
-}
-
-function buildPostcard4x6(canvas, ctx, images, tpl, o) {
-  const dpi = o.printDpi;
-  const W = Math.round(4 * dpi), H = Math.round(6 * dpi);
-  canvas.width = W; canvas.height = H;
-  paintBackground(ctx, W, H, o.bg);
-
-  const edge = Math.round(0.16 * dpi);
-  const footerH = Math.round(0.4 * dpi);
-  const areaW = W - edge * 2, areaH = H - edge * 2 - footerH;
-  const gap = Math.min(o.gap, dpi * 0.04);
-
-  const cells = flexCellLayout(images.length, areaW, areaH, gap);
-  images.forEach((img, i) => {
-    const c = cells[i]; if (!c) return;
-    drawPhotoInCell(ctx, img, edge + c.x, edge + c.y, c.w, c.h, Math.min(o.r, dpi * 0.03), o.border);
-  });
-
-  if (o.paperTexture) paperNoise(ctx, W, H, 0.02);
-}
-
-/**
- * Simulates a professional photo-booth printer: two identical copies of an
- * already-finished 2×6 strip laid out side by side on one 4×6 sheet with a
- * dashed cut line down the middle, ready to be sliced apart after printing.
- * @param {HTMLCanvasElement} stripCanvas a finished, already-decorated 2×6 strip
- * @param {{printDpi?: number}} opts
- */
-export function composeDualStripSheet(stripCanvas, opts = {}) {
-  const dpi = opts.printDpi || 300;
-  const sheetW = Math.round(4 * dpi), sheetH = Math.round(6 * dpi);
-  const sheet = document.createElement('canvas');
-  sheet.width = sheetW; sheet.height = sheetH;
-  const ctx = sheet.getContext('2d');
-  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, sheetW, sheetH);
-
-  const margin = Math.round(0.12 * dpi);
-  const stripW = (sheetW - margin * 3) / 2;
-  const fitScale = stripW / stripCanvas.width;
-  const stripH = stripCanvas.height * fitScale;
-  const y = Math.max(margin, (sheetH - stripH) / 2);
-
-  ctx.drawImage(stripCanvas, margin, y, stripW, stripH);
-  ctx.drawImage(stripCanvas, margin * 2 + stripW, y, stripW, stripH);
-
-  ctx.save();
-  ctx.strokeStyle = 'rgba(0,0,0,.35)';
-  ctx.setLineDash([dpi * 0.03, dpi * 0.02]);
-  ctx.lineWidth = Math.max(1, dpi * 0.006);
-  ctx.beginPath();
-  ctx.moveTo(sheetW / 2, margin * 0.4);
-  ctx.lineTo(sheetW / 2, sheetH - margin * 0.4);
-  ctx.stroke();
-  ctx.restore();
-
-  ctx.fillStyle = 'rgba(0,0,0,.4)';
-  ctx.font = `${Math.round(dpi * 0.09)}px sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.fillText('✂', sheetW / 2, margin * 0.35);
-
-  return sheet;
 }
 
 export function downloadCanvas(canvas, filename, type = 'image/png', quality) {
