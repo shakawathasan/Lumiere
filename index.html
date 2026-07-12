@@ -33,6 +33,9 @@
     <!-- Vignette -->
     <div id="vignette" aria-hidden="true"></div>
 
+    <!-- Orientation frame guide: shows exactly what area will be captured -->
+    <div id="frameGuide" aria-hidden="true"><div class="frame-guide-corner tl"></div><div class="frame-guide-corner tr"></div><div class="frame-guide-corner bl"></div><div class="frame-guide-corner br"></div></div>
+
     <!-- ============ IDLE HINT (shown only if you cancel back out) ============ -->
     <section id="idleHint" class="panel-fade">
       <div class="idle-inner">
@@ -73,6 +76,14 @@
         <button class="chip" data-layout="2">2 Photos</button>
         <button class="chip" data-layout="3">3 Photos</button>
         <button class="chip active" data-layout="4">4 Photos · Classic</button>
+      </div>
+
+      <div class="panel-heading panel-heading-secondary">
+        <span class="panel-eyebrow">Orientation</span>
+      </div>
+      <div id="orientationChoices" class="chip-row">
+        <button class="chip active" data-orientation="portrait">📱 Portrait</button>
+        <button class="chip" data-orientation="landscape">🖥️ Landscape</button>
       </div>
 
       <div class="panel-heading panel-heading-secondary">
@@ -149,6 +160,12 @@
 
           <div class="studio-tab-content">
             <div class="tab-panel active" data-panel="layout">
+              <div class="panel-heading"><span class="panel-eyebrow">Orientation</span></div>
+              <div id="studioOrientationChoices" class="chip-row">
+                <button class="chip active" data-orientation="portrait">📱 Portrait</button>
+                <button class="chip" data-orientation="landscape">🖥️ Landscape</button>
+              </div>
+              <div class="panel-heading panel-heading-secondary"><span class="panel-eyebrow">Template</span></div>
               <div id="templateGrid" class="template-grid"></div>
             </div>
 
@@ -165,11 +182,6 @@
                   <option value="large">Large</option>
                 </select>
               </label>
-              <p class="hint-text" id="printSizeHint">For the 2×6 and 4×6 templates, print size sets DPI (150/300/450) — the physical paper size stays exact.</p>
-              <div id="dualSheetRow" class="field-inline" aria-hidden="true">
-                <span>4×6 sheet</span>
-                <label class="checkbox-inline"><input type="checkbox" id="dualSheetToggle" /> Print two strips per 4×6 sheet (with cut line)</label>
-              </div>
             </div>
 
             <div class="tab-panel" data-panel="stickers">
