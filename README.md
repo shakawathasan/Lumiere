@@ -73,83 +73,73 @@ filter, Delete/Ctrl+D on selected stickers, G for gallery, ? for help,
 Esc to back out), visible focus states, responsive layout down to phone
 width, and the same premium animation/sound language as the original.
 
-## Performance, capture-timing, and cropping fixes
+## Live preview performance & capture-timing fix
 
-**Live preview performance.** The render loop previously recomputed
-several effects at full canvas resolution on every single frame — most
-expensively, the "old magazine" halftone dots (tens of thousands of
-individual `arc()` draws per frame) and film-grain noise (a full
-per-pixel `ImageData` regeneration at up to several million pixels on
-high-DPI screens). That was consuming most of a video frame's time
-budget, which under load could visibly delay the whole page including
-the countdown timer. Fixed by:
-- Capping the internal render resolution to ~1600px on the long edge
-  regardless of screen DPI (CSS `object-fit: cover` handles the upscale
-  for free — this is a resolution the eye can't tell apart from native
-  on a live camera feed, but is far cheaper to redraw 60x/second).
+The render loop previously recomputed several effects at full canvas
+resolution on every single frame — most expensively, the "old magazine"
+halftone dots (tens of thousands of individual draws per frame) and
+film-grain noise (a full per-pixel regeneration at up to several million
+pixels on high-DPI screens). That could visibly back up the main thread,
+and since capture used to read its pixels from that same canvas, a
+captured photo could end up noticeably behind the pose you were actually
+holding. Fixed by:
+
+- Capping internal render resolution to ~1920px on the long edge
+  regardless of screen DPI (CSS handles the upscale, so there's no visible
+  quality loss on ordinary displays).
 - Replacing the halftone/scanline per-frame loops with cached
-  `CanvasPattern` fills — one `fillRect()` call regardless of resolution,
-  instead of thousands of individual shape draws.
-- Replacing full-resolution grain regeneration with a small (320×320)
-  noise tile, regenerated a few times a second and blitted up — same
-  visual grain, a fraction of the pixel-writes.
-- Computing chromatic aberration on a small fixed-size offscreen canvas
-  and upscaling it, instead of running the (expensive) color-filtered
-  redraw twice at full screen resolution.
-- Using low-latency canvas context hints (`desynchronized`, `alpha:false`
-  on the opaque preview layer).
+  `CanvasPattern` fills (one draw call regardless of resolution) and
+  shrinking grain generation to a small reusable noise tile.
+- Computing chromatic aberration on a small offscreen canvas and
+  upscaling it, instead of running the filtered redraw twice at full
+  resolution.
+- **Capturing directly from the raw camera feed** the instant the
+  countdown hits zero — not from the composited preview canvas — so the
+  saved photo can never inherit any rendering lag. Shutter sound and
+  flash fire immediately after that pixel grab; the cosmetic filter pass
+  (identical to what the live preview shows) is applied to the
+  already-captured frame afterward, so it can't delay the capture itself.
+- The countdown now runs on `requestAnimationFrame` against a fixed
+  wall-clock target instead of `setInterval`, which can drift under load.
 
-**The ~2-second capture delay.** This was a direct consequence of the
-above: capture read its pixels from the *already-rendered* preview
-canvas, so if that canvas's rendering had backed up under load, the
-captured photo inherited that staleness — and the countdown itself used
-`setInterval`, which can also drift when the main thread is busy. Fixed
-by capturing directly from the raw `<video>` element the instant the
-countdown hits zero (bypassing the composited preview canvas entirely),
-firing the shutter sound/flash immediately after that pixel grab, and
-moving the countdown to `requestAnimationFrame` scheduling against a
-fixed wall-clock target instead of a plain interval. The heavier cosmetic
-pass (grain, aberration, halftone, vignette) now runs once, after the
-raw frame is already safely captured, so it can never delay the moment
-of capture itself.
+## Orientation selector
 
-**Cropping/zooming in layouts.** Every template previously used a
-cover-fit (like CSS `object-fit: cover`) to fill each photo cell, which
-crops whatever doesn't fit the cell's exact aspect ratio — the more a
-captured photo's aspect differed from a cell's shape, the more visible
-the crop/zoom. Combined with the capture fix above (photos are now saved
-at the camera's true native aspect ratio, not the screen's), this is
-fixed at the root: every template now uses **contain-fit** (matching CSS
-`object-fit: contain`) — the complete photo is always visible, at its
-true proportions, never cropped, zoomed, or stretched. Any leftover space
-inside a cell simply shows the page background already painted underneath
-it, which reads as a clean mat rather than a gap.
+A **Portrait / Landscape** choice is available in two places — the filter
+panel before you start a session, and the top of the Studio's Layout tab
+— and both stay in sync with each other. Selecting an orientation:
 
-## New print layouts
+- Adjusts the **live capture frame guide** (a bordered rectangle overlaid
+  on the fullscreen camera view, showing exactly what will be captured)
+  without changing the immersive fullscreen background itself.
+- Crops each captured photo to that orientation's aspect ratio (3:4
+  portrait / 4:3 landscape) directly from the native camera resolution —
+  no upscaling, so capture quality is unaffected.
+- Reflows **every one of the 13 templates** into a dedicated portrait or
+  landscape arrangement — for example, a classic strip stacks photos
+  vertically in portrait but lays them out left-to-right in landscape; a
+  film-negative strip runs horizontally in landscape but becomes a
+  vertical filmstrip in portrait; postcard collages transpose their
+  big-photo/small-photos arrangement, and so on.
+- Automatically applies to borders, backgrounds, paper texture, the
+  footer (timestamp/caption/logo), and any stickers or text you've
+  placed, since those are already computed relative to the composed
+  canvas's current size — no separate orientation-specific logic was
+  needed for them.
+- The Studio's live preview canvas already re-renders on every relevant
+  change, so switching orientation there shows the final print layout
+  immediately, before you commit to it.
 
-**Classic 2×6 Photo Booth Strip** (`js/layouts.js` → `buildStrip2x6`) —
-dimensionally accurate 2×6 inch strip (not an arbitrary pixel size),
-available in 3-photo and 4-photo versions, with the usual border/corner/
-paper-texture/timestamp/caption/logo controls. When this template is
-selected, a **"Print two strips per 4×6 sheet"** toggle appears in the
-Background tab — turning it on wraps the finished strip into an accurate
-4×6 sheet containing two identical copies side by side with a dashed cut
-line down the middle, the way a real photo-booth dye-sub printer produces
-strips, for every download/print/PDF action.
-
-**4×6 Postcard** (`js/layouts.js` → `buildPostcard4x6`) — a true 4×6 inch
-format with one-photo, two-photo, three-photo collage, and four-photo
-collage presets, plus a "custom collage" variant that auto-arranges any
-number of photos in a grid. Same border/background/texture/caption/
-event-title/timestamp/logo controls as every other template.
-
-Both new template families use **print size = DPI** rather than a
-physical size multiplier (150/300/450 DPI for small/medium/large) — the
-paper size stays exactly 2×6 or 4×6 inches at every setting; what changes
-is print resolution/quality. This is different from the legacy templates,
-where print size scales the whole layout up or down — that distinction
-is intentional, since "2×6 inches" wouldn't mean anything if the size
-setting could shrink or stretch it.
+**One deliberate design choice worth knowing:** orientation changes the
+overall *page* shape and how cells are arranged, but it does not change
+how an individual photo is fitted into its cell — that remains cover-fit
+(fills the cell, cropping any excess), exactly as it was before this
+change. An earlier revision of this app briefly switched to "contain-fit"
+(never crop, letterbox instead) and was explicitly reverted back to
+cover-fit at your request, so this update preserves that reverted
+behavior rather than reintroducing it. If you'd actually like individual
+photos to never be cropped within their cells (letterboxed instead), that
+would be a one-line change to `drawPhotoInCell` in `js/layouts.js` — happy
+to make it if that's what you want.
 
 ## Things worth knowing before you rely on this
 
@@ -164,11 +154,6 @@ setting could shrink or stretch it.
   be too slow to run on every live video frame, which is why the *live
   preview* still uses the cheaper CSS-filter pipeline from the original
   booth, and the editing panel only touches already-captured stills.
-- **The 2×6/4×6 templates at "Large" (450 DPI)** produce genuinely large
-  canvases (up to ~1800×2700px), so the live Studio preview may feel very
-  slightly less snappy while dragging sliders on that combination — the
-  final output quality is the point of that setting, so this is an
-  intentional trade-off rather than a bug.
 - **QR codes** encode whatever text/link you type into the QR field —
   there's no backend here to auto-generate a hosted link to the photo
   itself, so it's most useful for something like an event URL or a note.
